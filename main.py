@@ -4,36 +4,18 @@ from discord import app_commands
 import sqlite3
 import random
 import aiohttp
+from aiohttp import web
 import asyncio
+import os
+from dotenv import load_dotenv
 
 # ------------------------------
 # CONFIGURATION
 # ------------------------------
-import os
-from dotenv import load_dotenv
-
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
-
-client = discord.Client(intents=intents)  # <-- just added intents here
-
-@client.event
-async def on_ready():
-    print(f'Logged in as {client.user}!')
-
-client.run(DISCORD_TOKEN)
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 
-PREFIX = "!"
-XP_COOLDOWN = 60  # seconds
-
-# ------------------------------
-# INTENTS & BOT SETUP
-# ------------------------------
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -114,7 +96,7 @@ async def on_message(message):
     user_id = message.author.id
     now = asyncio.get_event_loop().time()
 
-    if user_id not in last_xp or now - last_xp[user_id] >= XP_COOLDOWN:
+    if user_id not in last_xp or now - last_xp[user_id] >= 60:  # XP_COOLDOWN
         xp_gain = random.randint(10, 20)
         last_xp[user_id] = now
 
@@ -165,9 +147,6 @@ async def level(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("You don’t have any XP yet. Start chatting to earn some!")
 
-# ------------------------------
-# RECOMMEND COMMANDS
-# ------------------------------
 @bot.tree.command(name="recommend", description="Recommend a movie to others.")
 @app_commands.describe(movie_name="Name of the movie to recommend")
 async def recommend(interaction: discord.Interaction, movie_name: str):
@@ -201,9 +180,6 @@ async def rate(interaction: discord.Interaction, movie_name: str, rating: int):
     conn.commit()
     await interaction.response.send_message(f"⭐ You rated **{movie_name}** {rating}/10!")
 
-# ------------------------------
-# RANDOM MOVIE / GENRE
-# ------------------------------
 @bot.tree.command(name="randommovie", description="Get a random movie suggestion.")
 async def randommovie(interaction: discord.Interaction):
     async with aiohttp.ClientSession() as session:
@@ -249,6 +225,32 @@ async def moviechain(ctx, *, movie_name: str):
     await ctx.send(f"🎬 Nice! Next movie should start with **{current_last_letter.upper()}**!")
 
 # ------------------------------
-# RUN THE BOT
+# WEB SERVER TO KEEP RAILWAY HAPPY
 # ------------------------------
-bot.run(DISCORD_TOKEN)
+async def handle(request):
+    return web.Response(text="OK")
+
+async def run_webserver():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get('PORT', 8000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+
+# ------------------------------
+# MAIN ASYNC ENTRYPOINT
+# ------------------------------
+async def main():
+    await site.start()
+
+# ------------------------------
+# MAIN ASYNC ENTRYPOINT
+# ------------------------------
+async def main():
+    await run_webserver()
+    await bot.start(DISCORD_TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())

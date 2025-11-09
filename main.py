@@ -14,17 +14,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-client = discord.Client() # <- This creates the client object
-
-@client.event
-async def on_ready():
-    print(f'Logged in as {client.user}!')
-
-client.run(DISCORD_TOKEN)
-TMDB_API_KEY = os.getenv("TMDB_API_KEY")
-
-PREFIX = "!"
-XP_COOLDOWN = 60  # seconds
 
 # ------------------------------
 # INTENTS & BOT SETUP
@@ -33,7 +22,7 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ------------------------------
 # DATABASE SETUP
@@ -109,7 +98,7 @@ async def on_message(message):
     user_id = message.author.id
     now = asyncio.get_event_loop().time()
 
-    if user_id not in last_xp or now - last_xp[user_id] >= XP_COOLDOWN:
+    if user_id not in last_xp or now - last_xp[user_id] >= 60:  # XP_COOLDOWN
         xp_gain = random.randint(10, 20)
         last_xp[user_id] = now
 
@@ -123,7 +112,6 @@ async def on_message(message):
             xp = xp_gain
             level = 1
 
-        # Check level up
         new_level = level
         for i, threshold in enumerate(level_thresholds):
             if xp >= threshold:
@@ -202,7 +190,7 @@ async def rate(interaction: discord.Interaction, movie_name: str, rating: int):
 @bot.tree.command(name="randommovie", description="Get a random movie suggestion.")
 async def randommovie(interaction: discord.Interaction):
     async with aiohttp.ClientSession() as session:
-        url = f"https://api.themoviedb.org/3/movie/popular?api_key={TMDB_API_KEY}&language=en-US&page={random.randint(1, 10)}"
+        url = f"https://api.themoviedb.org/3/movie/popular?api_key={os.getenv('TMDB_API_KEY')}&language=en-US&page={random.randint(1, 10)}"
         async with session.get(url) as resp:
             data = await resp.json()
             movie = random.choice(data["results"])
@@ -247,3 +235,4 @@ async def moviechain(ctx, *, movie_name: str):
 # RUN THE BOT
 # ------------------------------
 bot.run(DISCORD_TOKEN)
+

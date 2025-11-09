@@ -14,6 +14,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+client = discord.client() # <- This creates the client object
+
+@client.event
+async def on_ready():
+    print(f'Logged in as {client.user}!')
+
 client.run(DISCORD_TOKEN)
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 

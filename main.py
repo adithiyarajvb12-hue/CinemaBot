@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-client = discord.client() # <- This creates the client object
+client = discord.Client() # <- This creates the client object
 
 @client.event
 async def on_ready():

@@ -90,13 +90,16 @@ last_xp = {}
 
 @bot.event
 async def on_message(message):
+    # Uncomment below to debug if messages trigger twice
+    # print(f"on_message triggered by {message.author} - {message.content}")
+
     if message.author.bot:
         return
 
     user_id = message.author.id
     now = asyncio.get_event_loop().time()
 
-    if user_id not in last_xp or now - last_xp[user_id] >= 60:  # XP_COOLDOWN
+    if user_id not in last_xp or now - last_xp[user_id] >= 60:  # XP_COOLDOWN 60 seconds
         xp_gain = random.randint(10, 20)
         last_xp[user_id] = now
 
@@ -130,7 +133,11 @@ async def level_up(user, guild, new_level):
     if not role:
         role = await guild.create_role(name=role_name)
     await user.add_roles(role)
-    await user.send(f"🎉 Congrats {user.name}! You’ve been promoted to **{role_name}**!")
+    try:
+        await user.send(f"🎉 Congrats {user.name}! You’ve been promoted to **{role_name}**!")
+    except discord.Forbidden:
+        # User has DMs disabled
+        pass
 
 # ------------------------------
 # SLASH COMMANDS
@@ -237,12 +244,6 @@ async def run_webserver():
     await runner.setup()
     port = int(os.environ.get('PORT', 8000))
     site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-
-# ------------------------------
-# MAIN ASYNC ENTRYPOINT
-# ------------------------------
-async def main():
     await site.start()
 
 # ------------------------------

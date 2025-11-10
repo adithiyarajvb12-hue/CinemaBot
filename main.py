@@ -253,4 +253,4 @@ async def main():
     await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
-    asyncio.run(main()) The discord bot is show messages twice
+    asyncio.run(main()) 

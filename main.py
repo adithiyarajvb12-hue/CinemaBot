@@ -95,12 +95,11 @@ async def on_ready():
 # ------------------------------
 @bot.event
 async def on_member_join(member):
-    channel = member.guild.system_channel
+    channel = discord.utils.get(member.guild.text_channels, name="welcome")  # replace with your channel name
     if channel:
         await channel.send(
             f"🎥 **Welcome to the Cinema Society, {member.mention}!**\nGrab your popcorn 🍿 and join the show!"
         )
-
 # ------------------------------
 # XP SYSTEM
 # ------------------------------

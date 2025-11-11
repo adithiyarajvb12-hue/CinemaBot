@@ -2,3 +2,7 @@ discord.py
 aiohttp
 requests
 python-dotenv
+aiohttp
+discord.py
+python-dotenv
+requests

@@ -462,25 +462,112 @@ async def movieschedule(interaction: discord.Interaction):
 # ------------------------------
 # MOVIE CHAIN GAME
 # ------------------------------
-used_movies = []
-current_last_letter = None
+c.execute("""
+CREATE TABLE IF NOT EXISTS moviechain_config (
+    guild_id INTEGER PRIMARY KEY,
+    channel_id INTEGER
+)
+""")
+conn.commit()
 
-@bot.command(name="moviechain")
-async def moviechain(ctx, *, movie_name: str):
-    global current_last_letter, used_movies
+# Runtime cache for game state
+used_movies = {}
+current_last_letter = {}
+
+def get_configured_channel(guild_id):
+    c.execute("SELECT channel_id FROM moviechain_config WHERE guild_id = ?", (guild_id,))
+    result = c.fetchone()
+    return result[0] if result else None
+
+async def verify_movie(movie_name: str):
+    """Check if movie exists on TMDB and return proper title."""
+    async with aiohttp.ClientSession() as session:
+        url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={movie_name}"
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            if not data.get("results"):
+                return None
+            return data["results"][0]["title"]
+
+@bot.tree.command(name="configure_moviechain", description="Set the channel for the Movie Chain game.")
+@app_commands.describe(channel="Select the channel to play the game in")
+@app_commands.checks.has_permissions(administrator=True)
+async def configure_moviechain(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = interaction.guild.id
+    c.execute(
+        "INSERT OR REPLACE INTO moviechain_config (guild_id, channel_id) VALUES (?, ?)",
+        (guild_id, channel.id)
+    )
+    conn.commit()
+
+    await interaction.response.send_message(
+        f"✅ Movie Chain game will now be played in {channel.mention}!",
+        ephemeral=False  # Visible to everyone
+    )
+
+
+@bot.tree.command(name="moviechain", description="Play the Movie Chain game!")
+@app_commands.describe(movie_name="Enter your movie name")
+async def moviechain(interaction: discord.Interaction, movie_name: str):
+    guild_id = interaction.guild.id
+    channel_id = get_configured_channel(guild_id)
+
+    # No channel configured
+    if not channel_id:
+        await interaction.response.send_message(
+            "⚙️ The game channel hasn’t been configured yet! Use `/configure_moviechain` first.",
+            ephemeral=True
+        )
+        return
+
+    game_channel = bot.get_channel(channel_id)
+    if not game_channel:
+        await interaction.response.send_message("❌ Configured channel not found!", ephemeral=True)
+        return
+
+    # Wrong channel check
+    if interaction.channel.id != channel_id:
+        await interaction.response.send_message(
+            f"⚠️ Please use this command in {game_channel.mention}!",
+            ephemeral=True
+        )
+        return
+
+    # ✅ Instantly show a public "checking" message
+    await interaction.response.send_message("🎬 Checking your movie...", ephemeral=False)
+
     movie_name = movie_name.strip().title()
+    verified_name = await verify_movie(movie_name)
 
-    if movie_name in used_movies:
-        await ctx.send("❌ That movie has already been used!")
+    if not verified_name:
+        await game_channel.send("❌ Couldn't find that movie on TMDB! Please check the spelling.")
         return
 
-    if current_last_letter and not movie_name.startswith(current_last_letter.upper()):
-        await ctx.send(f"⚠️ Movie must start with **{current_last_letter.upper()}**!")
+    # Initialize game state for this server
+    if guild_id not in used_movies:
+        used_movies[guild_id] = []
+        current_last_letter[guild_id] = None
+
+    # Check if already used
+    if verified_name in used_movies[guild_id]:
+        await game_channel.send("❌ That movie has already been used!")
         return
 
-    used_movies.append(movie_name)
-    current_last_letter = movie_name[-1]
-    await ctx.send(f"🎬 Nice! Next movie should start with **{current_last_letter.upper()}**!")
+    # Check starting letter
+    last_letter = current_last_letter[guild_id]
+    if last_letter and not verified_name.upper().startswith(last_letter.upper()):
+        await game_channel.send(f"⚠️ Movie must start with **{last_letter.upper()}**!")
+        return
+
+    # Update state
+    used_movies[guild_id].append(verified_name)
+    current_last_letter[guild_id] = verified_name[-1]
+
+    await game_channel.send(
+        f"🎬 **{verified_name}** accepted!\nNext movie should start with **{current_last_letter[guild_id].upper()}**!"
+    )
 
 # ------------------------------
 # WEB SERVER TO KEEP RAILWAY HAPPY
@@ -506,4 +593,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main()) 
-

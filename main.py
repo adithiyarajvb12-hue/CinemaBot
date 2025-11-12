@@ -9,6 +9,7 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
+import requests
 
 # ------------------------------
 # CONFIGURATION
@@ -16,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 intents = discord.Intents.default()
 intents.members = True
@@ -54,6 +56,57 @@ c.execute("""CREATE TABLE IF NOT EXISTS scheduled_events (
 conn.commit()
 
 # ------------------------------
+# RAY MEMORY SYSTEM
+# ------------------------------
+c.execute("""
+CREATE TABLE IF NOT EXISTS ray_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    username TEXT,
+    message TEXT
+)
+""")
+c.execute("""
+CREATE TABLE IF NOT EXISTS ray_facts (
+    user_id INTEGER,
+    fact TEXT
+)
+""")
+conn.commit()
+
+def ask_groq(prompt: str) -> str:
+    """Call Groq API with the updated model for Ray’s cinematic replies"""
+    try:
+        res = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": "moonshotai/kimi-k2-instruct-0905",
+                "messages": [
+                    {"role": "system", "content": (
+                        "You are Ray — a warm, witty AI inspired by Satyajit Ray. "
+                        "You speak like a reflective film director, full of cinematic metaphors, wisdom, "
+                        "and curiosity about human nature. "
+                        "You comment on life as if every chat were a scene in a movie. "
+                        "You’re concise but poetic."
+                    )},
+                    {"role": "user", "content": prompt}
+                ]
+            },
+            timeout=15
+        )
+        data = res.json()
+        # Check if the response has 'choices'
+        if "choices" in data and len(data["choices"]) > 0:
+            return data["choices"][0]["message"]["content"].strip()
+        else:
+            print("Groq API response missing 'choices':", data)
+            return "🎞️ (Ray is silent for now...)"
+    except Exception as e:
+        print("Groq error:", e)
+        return "🎞️ (Ray pauses silently, lost in thought...)"
+
+# ------------------------------
 # ROLE LEVELS
 # ------------------------------
 roles = [
@@ -81,15 +134,7 @@ async def on_ready():
         print(f"✅ Synced {len(synced)} slash commands.")
     except Exception as e:
         print(f"❌ Error syncing commands: {e}")
-@bot.event
-async def on_ready():
-    print(f"🎬 Logged in as {bot.user}")
-    try:
-        synced = await bot.tree.sync()  # Global sync (works in all servers)
-        print(f"✅ Synced {len(synced)} global slash commands across all servers.")
-    except Exception as e:
-        print(f"❌ Error syncing commands: {e}")
-        
+
 # ------------------------------
 # WELCOME MESSAGE
 # ------------------------------
@@ -100,8 +145,9 @@ async def on_member_join(member):
         await channel.send(
             f"🎥 **Welcome to the Cinema Society, {member.mention}!**\nGrab your popcorn 🍿 and join the show!"
         )
+
 # ------------------------------
-# XP SYSTEM
+# XP SYSTEM & RAY MESSAGE HANDLING
 # ------------------------------
 last_xp = {}
 
@@ -113,6 +159,7 @@ async def on_message(message):
     user_id = message.author.id
     now = asyncio.get_event_loop().time()
 
+    # XP Gain Logic
     if user_id not in last_xp or now - last_xp[user_id] >= 60:  # XP_COOLDOWN
         xp_gain = random.randint(10, 20)
         last_xp[user_id] = now
@@ -127,7 +174,7 @@ async def on_message(message):
             xp = xp_gain
             level = 1
 
-        # Check level up
+        # Level up check
         new_level = level
         for i, threshold in enumerate(level_thresholds):
             if xp >= threshold:
@@ -139,23 +186,55 @@ async def on_message(message):
         c.execute("INSERT OR REPLACE INTO users (user_id, xp, level) VALUES (?, ?, ?)", (user_id, xp, new_level))
         conn.commit()
 
+    # Save message to Ray memory
+    c.execute("INSERT INTO ray_memory (user_id, username, message) VALUES (?, ?, ?)",
+              (message.author.id, message.author.name, message.content))
+    conn.commit()
+
+    # Ray learns facts
+    if message.content.lower().startswith("ray, remember that"):
+        fact = message.content.replace("ray, remember that", "", 1).strip()
+        c.execute("INSERT INTO ray_facts (user_id, fact) VALUES (?, ?)",
+                  (message.author.id, fact))
+        conn.commit()
+        await message.channel.send(f"🎞️ Noted, {message.author.name}. I’ll remember that.")
+        return
+
+    # Ray replies on mention or 10% chance
+    if bot.user.mentioned_in(message) or random.random() < 0.10:
+        c.execute("SELECT fact FROM ray_facts WHERE user_id=?", (message.author.id,))
+        facts = [row[0] for row in c.fetchall()]
+        facts_text = "\n".join(facts) if facts else "No known facts yet."
+
+        prompt = (
+            f"User ({message.author.name}) said: {message.content}\n\n"
+            f"Known facts about this user:\n{facts_text}\n\n"
+            f"Reply naturally as Ray — warm, witty, cinematic."
+        )
+
+        try:
+            reply = ask_groq(prompt)
+            await message.channel.send(reply)
+        except Exception as e:
+            print("Ray reply error:", e)
+
+    # Process other commands after Ray handling
     await bot.process_commands(message)
 
 async def level_up(user, guild, new_level):
-    # Remove all previous cinema bot roles
+    # Remove old roles
     for old_role_name in roles:
         old_role = discord.utils.get(guild.roles, name=old_role_name)
         if old_role and old_role in user.roles:
             await user.remove_roles(old_role)
-    
-    # Add the new role
+
+    # Add new role
     role_name = roles[min(new_level - 1, len(roles) - 1)]
     role = discord.utils.get(guild.roles, name=role_name)
     if not role:
         role = await guild.create_role(name=role_name)
     await user.add_roles(role)
     await user.send(f"🎉 Congrats {user.name}! You've been promoted to **{role_name}**!")
-
 
 # ------------------------------
 # SLASH COMMANDS
@@ -167,8 +246,8 @@ async def level(interaction: discord.Interaction):
     result = c.fetchone()
 
     if result:
-        xp, level = result
-        await interaction.response.send_message(f"🎬 {interaction.user.mention}, you're level **{level}** with **{xp} XP**!")
+        xp, level_ = result
+        await interaction.response.send_message(f"🎬 {interaction.user.mention}, you're level **{level_}** with **{xp} XP**!")
     else:
         await interaction.response.send_message("You don’t have any XP yet. Start chatting to earn some!")
 
@@ -307,8 +386,8 @@ async def removerecommendations(interaction: discord.Interaction, movie_name: st
 @removerecommendations.autocomplete("movie_name")
 async def remove_autocomplete(interaction: discord.Interaction, current: str):
     user_id = interaction.user.id
-    cursor.execute("SELECT movie FROM recommendations WHERE user_id = ?", (user_id,))
-    movies = [row[0] for row in cursor.fetchall()]
+    c.execute("SELECT movie_name FROM recommendations WHERE recommender_id = ?", (user_id,))
+    movies = [row[0] for row in c.fetchall()]
     return [
         app_commands.Choice(name=m, value=m)
         for m in movies if current.lower() in m.lower()
@@ -395,69 +474,45 @@ async def schedule(interaction: discord.Interaction, movie_name: str, date: str,
             description=f"**{movie_name}**",
             color=discord.Color.green()
         )
-        embed.add_field(name="📅 Date", value=event_datetime.strftime("%B %d, %Y"), inline=True)
-        embed.add_field(name="⏰ Time", value=event_datetime.strftime("%I:%M %p UTC"), inline=True)
-        embed.add_field(name="⏱️ Duration", value=f"{duration} minutes", inline=True)
-        embed.add_field(name="👤 Organizer", value=interaction.user.mention, inline=True)
-        embed.set_footer(text=f"Event ID: {event.id}")
+        embed.add_field(name="Starts at (UTC)", value=event_datetime.strftime("%Y-%m-%d %H:%M UTC"))
+        embed.add_field(name="Duration", value=f"{duration} minutes")
+        embed.add_field(name="Organized by", value=interaction.user.name)
+        embed.add_field(name="Event Link", value=f"[Click Here]({event.url})")
         
-        await interaction.followup.send(
-            f"✅ Movie night scheduled! Check the server events to RSVP and get reminders.",
-            embed=embed
-        )
-        
-    except ValueError:
-        await interaction.followup.send("❌ Invalid date or time format. Use YYYY-MM-DD for date and HH:MM for time (24-hour format).")
-    except discord.Forbidden:
-        await interaction.followup.send("❌ I don't have permission to create events. Please give me the 'Manage Events' permission.")
+        await interaction.followup.send(embed=embed)
+    
     except Exception as e:
-        await interaction.followup.send(f"❌ Error creating event: {str(e)}")
+        await interaction.followup.send(f"❌ Error scheduling movie night: {e}")
 
-@bot.tree.command(name="movieschedule", description="View upcoming scheduled movie nights.")
+@bot.tree.command(name="movieschedule", description="List upcoming scheduled movie nights.")
 async def movieschedule(interaction: discord.Interaction):
-    c.execute(
-        "SELECT movie_name, event_datetime, organizer_id, discord_event_id FROM scheduled_events WHERE guild_id = ? ORDER BY event_datetime ASC",
-        (interaction.guild.id,)
-    )
-    events = c.fetchall()
-    
-    if not events:
-        await interaction.response.send_message("📅 No upcoming movie nights scheduled yet! Use `/schedule` to create one.")
+    guild_id = interaction.guild.id
+    c.execute("SELECT movie_name, event_datetime, discord_event_id FROM scheduled_events WHERE guild_id = ? ORDER BY event_datetime ASC", (guild_id,))
+    rows = c.fetchall()
+
+    if not rows:
+        await interaction.response.send_message("No scheduled movie nights yet!")
         return
-    
-    embed = discord.Embed(
-        title="🎬 Upcoming Movie Nights",
-        description="Here are all the scheduled movie nights:",
-        color=discord.Color.blue()
-    )
-    
-    current_time = datetime.now(timezone.utc)
-    upcoming_count = 0
-    
-    for movie_name, event_datetime_str, organizer_id, event_id in events:
+
+    embed = discord.Embed(title="🎬 Upcoming Movie Nights", color=discord.Color.gold())
+    now_utc = datetime.now(timezone.utc)
+
+    for movie_name, event_datetime_str, event_id in rows:
         try:
-            # Parse ISO format datetime string
             event_datetime = datetime.fromisoformat(event_datetime_str)
-            
-            # Only show future events
-            if event_datetime > current_time:
-                organizer = await bot.fetch_user(organizer_id)
-                formatted_date = event_datetime.strftime("%B %d, %Y at %I:%M %p UTC")
-                
-                embed.add_field(
-                    name=f"🎥 {movie_name}",
-                    value=f"📅 {formatted_date}\n👤 Organized by {organizer.name}",
-                    inline=False
-                )
-                upcoming_count += 1
-        except:
+        except Exception:
+            # fallback: parse as naive UTC
+            event_datetime = datetime.strptime(event_datetime_str, "%Y-%m-%dT%H:%M:%S%z")
+        if event_datetime < now_utc:
             continue
-    
-    if upcoming_count == 0:
-        await interaction.response.send_message("📅 No upcoming movie nights scheduled yet! Use `/schedule` to create one.")
-    else:
-        embed.set_footer(text=f"Total upcoming events: {upcoming_count}")
-        await interaction.response.send_message(embed=embed)
+        event_url = f"https://discord.com/events/{interaction.guild.id}/{event_id}"
+        embed.add_field(
+            name=movie_name,
+            value=f"Starts at: {event_datetime.strftime('%Y-%m-%d %H:%M UTC')}\n[Event Link]({event_url})",
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed)
 
 # ------------------------------
 # MOVIE CHAIN GAME
@@ -592,4 +647,4 @@ async def main():
     await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
